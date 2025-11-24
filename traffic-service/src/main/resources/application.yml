@@ -1,9 +1,13 @@
 server:
-  port: 8084
+  port: 8083
 
 spring:
   application:
-    name: incident-service
+    name: traffic-service
+
+  cloud:
+    config:
+      enabled: false
 
   datasource:
     url: jdbc:postgresql://localhost:5432/smartmove
@@ -19,3 +23,7 @@ eureka:
   client:
     serviceUrl:
       defaultZone: http://localhost:8761/eureka/
+
+tomtom:
+  api:
+    key: ah8HOxL738TmMMIjXhXvGdTQrSDqsAq3

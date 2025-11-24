@@ -18,4 +18,9 @@ import lombok.NoArgsConstructor;
         private double longitude;
 
         private int congestionLevel;
+        // ➕ Champs ajoutés
+        private String source;
+
+        @Column(columnDefinition = "TEXT")  // le JSON peut être long
+        private String rawResponse;
     }

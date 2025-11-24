@@ -8,4 +8,5 @@ import java.util.List;
 public interface TrafficService {
     List<Traffic> getAllTraffic();
     Traffic saveTraffic(Traffic traffic);
+    Traffic getTrafficFromTomTom(double latitude, double longitude);
 }
