@@ -1,0 +1,11 @@
+package org.example.trafficservice.client;
+
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+
+// We might not need Feign if we use RestTemplate for external API
+// But this is good practice for inter-service.
+// Wait, I need to call TomTom EXTERNAL API. RestTemplate is better for that.
+// But I need Feign for PredictionService -> TrafficService.
+

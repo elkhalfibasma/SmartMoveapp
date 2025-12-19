@@ -28,16 +28,21 @@ public class TrafficController {
     @GetMapping("/tomtom")
     public Traffic getTrafficFromTomTom(
             @RequestParam double lat,
-            @RequestParam double lon
-    ) {
-        return trafficService.getTrafficFromTomTom(lat, lon);
-    }
-    @GetMapping("/realtime")
-    public Traffic getRealTimeTraffic(
-            @RequestParam double lat,
-            @RequestParam double lon
-    ) {
+            @RequestParam double lon) {
         return trafficService.getTrafficFromTomTom(lat, lon);
     }
 
+    @GetMapping("/realtime")
+    public Traffic getRealTimeTraffic(
+            @RequestParam double lat,
+            @RequestParam double lon) {
+        return trafficService.getTrafficFromTomTom(lat, lon);
+    }
+
+    @GetMapping("/route")
+    public java.util.Map<String, Object> calculateRoute(
+            @RequestParam String origin,
+            @RequestParam String destination) {
+        return trafficService.calculateRoute(origin, destination);
+    }
 }
