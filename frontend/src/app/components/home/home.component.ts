@@ -2,6 +2,8 @@ import { Component, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterModule } from '@angular/router';
 import { AuthService } from '../../services/auth.service';
+import { MeteoService } from '../../services/meteo.service';
+import { PredictionLogicService } from '../../services/prediction-logic.service';
 
 @Component({
   selector: 'app-home',
@@ -46,45 +48,52 @@ import { AuthService } from '../../services/auth.service';
 
         <!-- Dashboard Preview / Cards -->
         <div class="stats-grid animate-fade-in delay-3">
+          <!-- Traffic Card -->
           <div class="glass-card stat-item">
             <div class="card-header">
               <span class="card-icon traffic-icon">🚗</span>
               <span class="card-label">Trafic Urbain</span>
             </div>
             <div class="card-body">
-              <div class="status-value text-green">Fluide</div>
-              <div class="status-desc">Casablanca : Conditions optimales</div>
+              <div class="status-value" [ngClass]="isPeak ? 'text-orange' : 'text-green'">
+                 {{ isPeak ? 'Dense' : 'Fluide' }}
+              </div>
+              <div class="status-desc">Casablanca : {{ isPeak ? 'Heure de pointe' : 'Conditions optimales' }}</div>
             </div>
             <div class="card-footer">
-              <div class="progress-bar"><div class="progress-fill green" style="width: 15%"></div></div>
+              <div class="progress-bar">
+                   <div class="progress-fill" [ngClass]="isPeak ? 'orange' : 'green'" [style.width.%]="isPeak ? 75 : 15"></div>
+              </div>
             </div>
           </div>
 
+          <!-- Weather Card -->
           <div class="glass-card stat-item">
             <div class="card-header">
               <span class="card-icon weather-icon">☀️</span>
               <span class="card-label">Météo Locale</span>
             </div>
             <div class="card-body">
-              <div class="status-value">22°C</div>
-              <div class="status-desc">Ciel dégagé • Vent faible</div>
+              <div class="status-value">{{ weatherTemp !== null ? (weatherTemp | number:'1.0-0') + '°C' : '--' }}</div>
+              <div class="status-desc">{{ weatherDesc || 'Chargement...' }}</div>
             </div>
             <div class="card-footer">
-              <div class="weather-trend">↑ Température stable</div>
+              <div class="weather-trend" *ngIf="weatherTemp">📍 Casablanca</div>
             </div>
           </div>
 
+          <!-- Alerts Card -->
           <div class="glass-card stat-item">
             <div class="card-header">
               <span class="card-icon alert-icon">🔔</span>
               <span class="card-label">Alertes Actives</span>
             </div>
             <div class="card-body">
-              <div class="status-value text-blue">02</div>
-              <div class="status-desc">Incidents signalés à Rabat</div>
+              <div class="status-value text-blue">0</div>
+              <div class="status-desc">Aucun incident majeur</div>
             </div>
             <div class="card-footer">
-              <a routerLink="/notifications" class="card-link">Voir les détails</a>
+              <a class="card-link">Système vigilant</a>
             </div>
           </div>
         </div>
@@ -287,12 +296,14 @@ import { AuthService } from '../../services/auth.service';
     .status-desc { font-size: 14px; color: #94a3b8; }
 
     .text-green { color: #22c55e; }
+    .text-orange { color: #f97316; }
     .text-blue { color: #3b82f6; }
 
     .card-footer { margin-top: 24px; }
     .progress-bar { height: 6px; background: rgba(255, 255, 255, 0.05); border-radius: 10px; overflow: hidden; }
     .progress-fill { height: 100%; border-radius: 10px; }
     .progress-fill.green { background: #22c55e; }
+    .progress-fill.orange { background: #f97316; }
 
     .card-link { color: #3b82f6; text-decoration: none; font-size: 14px; font-weight: 600; }
     .card-link:hover { text-underline-offset: 4px; text-decoration: underline; }
@@ -314,6 +325,31 @@ import { AuthService } from '../../services/auth.service';
   `]
 })
 export class HomeComponent implements OnInit {
-  constructor(public authService: AuthService) { }
-  ngOnInit(): void { }
+  isPeak: boolean = false;
+  weatherTemp: number | null = null;
+  weatherDesc: string | null = null;
+
+  constructor(
+      public authService: AuthService,
+      private meteoService: MeteoService,
+      private predictionLogic: PredictionLogicService
+  ) { }
+
+  ngOnInit(): void {
+    // 1. Calculate Peak Hour
+    this.isPeak = this.predictionLogic.isPeakHour(new Date());
+
+    // 2. Fetch Weather for Casablanca (default)
+    // 33.5731° N, 7.5898° W
+    this.meteoService.getLiveWeather(33.5731, -7.5898).subscribe({
+        next: (data) => {
+            this.weatherTemp = data.current.temperature;
+            this.weatherDesc = data.current.condition;
+        },
+        error: (err) => {
+            console.error(err);
+            this.weatherDesc = "Non disponible";
+        }
+    });
+  }
 }

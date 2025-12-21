@@ -1,11 +1,15 @@
-import { Component, OnDestroy } from '@angular/core';
+import { Component, OnDestroy, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router, RouterModule } from '@angular/router';
 import { MapComponent } from '../map/map.component';
 import { TripPlannerComponent } from '../trip-planner/trip-planner.component';
 import { PredictionResultsComponent } from '../prediction-results/prediction-results.component';
+import { WeeklyForecastComponent } from '../weekly-forecast/weekly-forecast.component';
 import { AlertsComponent } from '../alerts/alerts.component';
-import { Prediction, PredictionService } from '../../services/prediction.service';
+import { PredictionService } from '../../services/prediction.service';
+import { PredictionLogicService } from '../../services/prediction-logic.service';
+import { MeteoService } from '../../services/meteo.service';
+import { PredictionUIModel } from '../../models/prediction-ui.model';
 import { AuthService } from '../../services/auth.service';
 
 @Component({
@@ -17,6 +21,7 @@ import { AuthService } from '../../services/auth.service';
     MapComponent,
     TripPlannerComponent,
     PredictionResultsComponent,
+    WeeklyForecastComponent,
     AlertsComponent
   ],
   template: `
@@ -41,9 +46,9 @@ import { AuthService } from '../../services/auth.service';
           
           <!-- Route Info Overlay -->
           <div class="route-overlay" *ngIf="currentPrediction">
-            <span class="route-origin">📍 {{ currentPrediction.origin }}</span>
+            <span class="route-origin">📍 {{ currentPrediction.mode === 'transit' ? 'Transport' : 'Départ' }}</span>
             <span class="route-arrow">→</span>
-            <span class="route-dest">🏁 {{ currentPrediction.destination }}</span>
+            <span class="route-dest">🏁 Arrivée</span>
           </div>
         </section>
 
@@ -65,6 +70,13 @@ import { AuthService } from '../../services/auth.service';
           <!-- Results -->
           <div *ngIf="currentPrediction && !isLoading">
             <app-prediction-results [prediction]="currentPrediction"></app-prediction-results>
+            
+            <!-- Weekly Forecast for the location -->
+            <app-weekly-forecast 
+                *ngIf="targetLocation" 
+                [lat]="targetLocation.lat" 
+                [lng]="targetLocation.lng">
+            </app-weekly-forecast>
           </div>
 
           <!-- Empty State -->
@@ -175,7 +187,8 @@ import { AuthService } from '../../services/auth.service';
   `]
 })
 export class DashboardComponent implements OnDestroy {
-  currentPrediction: Prediction | null = null;
+  currentPrediction: PredictionUIModel | null = null;
+  targetLocation: {lat: number, lng: number} | null = null;
   isLoading = false;
   error: string | null = null;
   currentTime: string = '';
@@ -184,31 +197,98 @@ export class DashboardComponent implements OnDestroy {
   private timeInterval: any;
 
   constructor(
-    private predictionService: PredictionService
+    private predictionService: PredictionService,
+    private predictionLogicService: PredictionLogicService,
+    private meteoService: MeteoService
   ) { }
 
   logout() {
     // Moved to App shell
   }
 
-  onPlanTrip(event: { origin: string, destination: string, date: string, time: string }) {
+  @ViewChild(MapComponent) mapComponent!: MapComponent;
+
+  onPlanTrip(event: { origin: string, destination: string, date: string, time: string, transportMode: string, originCoords?: {lat: number, lng: number} }) {
     console.log('Planning trip:', event);
     this.isLoading = true;
     this.currentPrediction = null;
+    this.targetLocation = null;
     this.error = null;
 
-    this.predictionService.analyzeEnrichedTrip(
-      event.origin, event.destination, event.date, event.time
-    ).subscribe({
-      next: (prediction) => {
-        this.currentPrediction = prediction;
+    // 1. Get Route from Map
+    const routeObservable = this.mapComponent ? 
+        (event.originCoords ? 
+            this.mapComponent.calculateRoute(event.originCoords, event.destination, event.transportMode) : 
+            this.mapComponent.calculateRouteFromStrings(event.origin, event.destination, event.transportMode)
+        ) : null;
+
+    if (!routeObservable) {
+        this.error = "Erreur interne: Carte non initialisée";
         this.isLoading = false;
-      },
-      error: (err) => {
-        this.error = 'Erreur lors de l\'analyse. Réessayez.';
-        this.isLoading = false;
-      }
+        return;
+    }
+
+    routeObservable.subscribe({
+        next: (routeResult) => {
+            if (!routeResult) {
+                this.error = "Trajet introuvable. Veuillez vérifier vos adresses.";
+                this.isLoading = false;
+                return;
+            }
+
+            // 2. Get Weather for Midpoint or Origin
+            const leg = routeResult.routes[0].legs[0];
+            // Use midpoint for better accuracy on long trips, or start location
+            // Simple approach: Start location
+            const startLoc = leg.start_location; 
+            
+            const lat = startLoc.lat();
+            const lng = startLoc.lng();
+            this.targetLocation = { lat, lng };
+
+            this.meteoService.getLiveWeather(lat, lng).subscribe({
+                next: (weatherData) => {
+                    // 3. Build Prediction Model
+                    try {
+                        const mode = this.mapModeToEnum(event.transportMode);
+                        this.currentPrediction = this.predictionLogicService.buildUIModel(routeResult, weatherData, mode);
+                        this.isLoading = false;
+                    } catch (e) {
+                         console.error("Error building prediction model", e);
+                         this.error = "Erreur lors du calcul des prévisions.";
+                         this.isLoading = false;
+                    }
+                },
+                error: (err) => {
+                    console.error("Weather error", err);
+                    // Fallback without weather
+                    try {
+                         const mode = this.mapModeToEnum(event.transportMode);
+                         this.currentPrediction = this.predictionLogicService.buildUIModel(routeResult, null, mode);
+                         this.isLoading = false;
+                    } catch (e2) {
+                        this.error = "Impossible de récupérer les données.";
+                        this.isLoading = false;
+                    }
+                }
+            });
+        },
+        error: (err) => {
+            console.error("Route error", err);
+            this.error = "Impossible de calculer l'itinéraire.";
+            this.isLoading = false;
+        }
     });
+
+    // Also update current location if user provided it
+    // if (event.originCoords) ...
+  }
+
+  private mapModeToEnum(mode: string): 'driving' | 'transit' | 'walking' {
+      const lower = mode.toLowerCase();
+      if (lower === 'walking' || lower === 'marche') return 'walking';
+      if (lower === 'transit' || lower === 'transport') return 'transit';
+      return 'driving';
   }
 
   onMonitorTrip(event: { origin: string, destination: string }) {

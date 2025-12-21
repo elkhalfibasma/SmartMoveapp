@@ -1,0 +1,22 @@
+<div class="map-overlays">
+  <!-- Weather Widget -->
+  <div class="glass-panel weather-widget" *ngIf="weatherData">
+    <div class="weather-icon">☀️</div>
+    <div class="weather-info">
+      <span class="city">{{ weatherData.city }}</span>
+      <span class="temp">{{ weatherData.temp }}°C</span>
+      <span class="condition">{{ weatherData.condition }}</span>
+    </div>
+  </div>
+
+  <!-- Traffic Toggle -->
+  <div class="glass-panel traffic-widget">
+    <label class="switch-container">
+      <input type="checkbox" [checked]="showTraffic" (change)="toggleTraffic()">
+      <span class="slider round"></span>
+    </label>
+    <span class="label-text">Trafic</span>
+  </div>
+</div>
+
+<div id="map"></div>

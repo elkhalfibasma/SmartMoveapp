@@ -140,38 +140,160 @@ public class PredictionService {
                 request.getOrigin(),
                 request.getDestination(),
                 request.getDepartureDate(),
-                request.getDepartureTime());
+                request.getDepartureTime(),
+                request.getTransportMode());
     }
 
     /**
      * Main method for enriched trip analysis with all dynamic factors
      */
     public EnrichedPrediction analyzeEnrichedTrip(String origin, String destination, String departureDate,
-            String departureTime) {
-        log.info("Analyzing trip: {} -> {} at {} {}", origin, destination, departureDate, departureTime);
+            String departureTime, String transportMode) { // Added transportMode
+        log.info("Analyzing trip: {} -> {} at {} {} via {}", origin, destination, departureDate, departureTime, transportMode);
 
-        // Step 1: Get base route data from Traffic Service (with smart fallback)
-        Map<String, Object> routeData = fetchRouteData(origin, destination);
+        // Defaut mode logic
+        String mode = (transportMode != null) ? transportMode.toLowerCase() : "driving";
 
-        // Step 2: Get weather data
+        // Step 1: Get Google/TomTom Base Duration (The "Solid Estimate")
+        Map<String, Object> routeData = fetchRouteData(origin, destination, mode);
+        double baseDuration = getDoubleValue(routeData, "durationMinutes", 25.0); // Fallback to 25 if fails
+        double distanceKm = getDoubleValue(routeData, "distanceKm", 10.0);
+
+        // Step 2: Fetch Context Data (The "Local Factors")
         Map<String, Object> weatherData = fetchWeatherData(origin);
-
-        // Step 3: Get incident data
         List<Map<String, Object>> incidents = fetchIncidents();
-
-        // Step 4: Calculate peak hour
         boolean isPeakHour = checkPeakHour(departureTime);
 
-        // Step 5: Calculate impacts and final prediction
+        // Step 3: Calculate ML Delta (The "Correction")
+        // Delta = WeatherDelta + TrafficDelta + IncidentDelta + PeakDelta
+        double weatherDelta = calculateWeatherDelta(weatherData, mode);
+        double incidentDelta = calculateIncidentDelta(incidents, mode);
+        double peakDelta = calculatePeakDelta(isPeakHour, mode);
+        
+        // Traffic "Delta" is often included in baseDuration if it's real-time, 
+        // but we might want to add a "historical bias" correction for Morocco.
+        double biasCorrection = calculateHistoricalBias(baseDuration, mode); 
+
+        double totalDelta = weatherDelta + incidentDelta + peakDelta + biasCorrection;
+
+        // Step 4: Final Prediction
+        double predictedDuration = baseDuration + totalDelta;
+
+        // Step 5: Confidence & Intelligence
+        double confidence = calculateConfidence(baseDuration, weatherData, incidents, mode);
+        String recommendation = generateAIRecommendation(isPeakHour, extractWeatherCondition(weatherData), incidents.size(), departureTime, totalDelta);
+
         return buildEnrichedPrediction(origin, destination, routeData, weatherData, incidents, isPeakHour,
-                departureTime, departureDate);
+                departureTime, departureDate, predictedDuration, baseDuration, distanceKm, totalDelta, confidence, recommendation);
+    }
+
+    private double calculateWeatherDelta(Map<String, Object> weatherData, String mode) {
+         if (mode.equals("walking")) return 0; // Rain doesn't slow walking speed technically, just comfort
+         
+         String condition = extractWeatherCondition(weatherData).toLowerCase();
+         if (condition.contains("rain") || condition.contains("pluie")) return 5.0; // +5 mins for rain
+         if (condition.contains("fog") || condition.contains("brouillard")) return 8.0; // +8 mins for fog
+         return 0.0;
+    }
+
+    private double calculateIncidentDelta(List<Map<String, Object>> incidents, String mode) {
+        if (mode.equals("walking") || mode.equals("transit")) return 0; // Assume rail/walking unaffected for MVP
+        
+        // Simple linear model for accidents
+        return incidents.size() * 10.0; // +10 min per reported incident
+    }
+
+    private double calculatePeakDelta(boolean isPeakHour, String mode) {
+        if (!isPeakHour) return 0.0;
+        if (mode.equals("walking")) return 0.0;
+        if (mode.equals("transit")) return 15.0; // Bus delays
+        return 20.0; // Driving delays in Casablanca peak
+    }
+
+    private double calculateHistoricalBias(double baseDuration, String mode) {
+        // "SmartMove" learns that estimates in Casablanca are often 10% too optimistic
+        if (mode.equals("driving")) return baseDuration * 0.10;
+        return 0.0;
+    }
+
+    private double calculateConfidence(double baseDuration, Map<String, Object> weatherData, List<Map<String, Object>> incidents, String mode) {
+        double score = 0.95; // Start high
+        if (weatherData == null) score -= 0.10;
+        if (mode.equals("transit")) score -= 0.15; // Transit prediction is harder
+        // Normalize 0-1
+        return Math.max(0.5, score);
+    }
+    
+    // Updated builder method to accept calculated values
+    private EnrichedPrediction buildEnrichedPrediction(
+            String origin, String destination,
+            Map<String, Object> routeData,
+            Map<String, Object> weatherData,
+            List<Map<String, Object>> incidents,
+            boolean isPeakHour,
+            String departureTime,
+            String departureDate,
+            double predictedDuration,
+            double baseDuration,
+            double distanceKm,
+            double totalDelta,
+            double confidence,
+            String aiRecommendation) {
+
+        // ... Existing extraction logic ... 
+        String weatherCondition = extractWeatherCondition(weatherData); 
+        double temperature = extractTemperature(weatherData);
+        double visibility = extractVisibility(weatherData);
+        double windSpeed = extractWindSpeed(weatherData);
+        
+        // Calculate percentages for UI
+        ImpactFactors impactFactors = calculateImpactFactors(0, 0, 0, 0); // TODO: Refactor to usage
+        
+        // Generate Details
+        List<String> explanationPoints = new ArrayList<>();
+        if (totalDelta > 0) explanationPoints.add("⏱️ Retard estimé: +" + Math.round(totalDelta) + " min");
+        if (isPeakHour) explanationPoints.add("⏰ Correction Heure de Pointe appliquée");
+        
+        // Risk
+        int riskScore = (int)((totalDelta / baseDuration) * 100);
+        String riskLevel = riskScore > 30 ? "HIGH" : (riskScore > 10 ? "MEDIUM" : "LOW");
+
+        return EnrichedPrediction.builder()
+                .origin(origin)
+                .destination(destination)
+                .timestamp(LocalDateTime.now().toString())
+                .predictedDuration(Math.round(predictedDuration * 10.0) / 10.0)
+                .baseDuration(Math.round(baseDuration * 10.0) / 10.0)
+                .distanceKm(Math.round(distanceKm * 10.0) / 10.0)
+                .riskLevel(riskLevel)
+                .riskScore(riskScore)
+                .impactFactors(impactFactors) // Pass simplified or recalculated
+                .isPeakHour(isPeakHour)
+                .hasIncidents(!incidents.isEmpty())
+                .weatherCondition(weatherCondition)
+                .trafficCondition("Normal") // Simplify
+                .explanationPoints(explanationPoints)
+                .aiRecommendation(aiRecommendation)
+                .temperature(temperature)
+                .visibility(visibility)
+                .windSpeed(windSpeed)
+                .incidentCount(incidents.size())
+                .incidentSeverity(getIncidentSeverity(incidents))
+                .durationText(formatDuration(predictedDuration))
+                .arrivalTime(calculateArrivalTime(departureTime != null ? departureTime : LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")), predictedDuration))
+                .departureTime(departureTime != null ? departureTime : LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")))
+                .routeGeometry((List<Object>) routeData.get("routeGeometry"))
+                .confidenceScore(confidence)
+                .recommendationOffset(totalDelta > 10 ? totalDelta * 0.4 : 0)
+                .build();
     }
 
     /**
      * Fetch route data from Traffic Service (TomTom integration)
      */
-    private Map<String, Object> fetchRouteData(String origin, String destination) {
+    private Map<String, Object> fetchRouteData(String origin, String destination, String mode) {
         try {
+            // TODO: Append mode to Traffic Service URL if supported
             @SuppressWarnings("unchecked")
             Map<String, Object> routeData = restTemplate.getForObject(
                     TRAFFIC_SERVICE_URL, Map.class, origin, destination);
@@ -439,66 +561,64 @@ public class PredictionService {
             List<Map<String, Object>> incidents,
             boolean isPeakHour,
             String departureTime,
-            String departureDate) {
-
-        // Extract base values
-        double baseDuration = getDoubleValue(routeData, "durationMinutes", 15.0);
-        double distanceKm = getDoubleValue(routeData, "distanceKm", 10.0);
-        double trafficDelay = getDoubleValue(routeData, "trafficDelayMinutes", 0.0);
-
-        // Weather analysis - DELEGATED TO SERVICE
-        WeatherImpactAnalysis weatherAnalysis = weatherImpactService.analyzeImpact(weatherData, departureTime);
-        double weatherModifier = weatherAnalysis.getImpactModifier();
+            String departureDate,
+            double predictedDuration,
+            double baseDuration,
+            double distanceKm,
+            double totalDelta,
+            double confidence,
+            String aiRecommendation) {
 
         // Extract basic data for other parts
-        String weatherCondition = extractWeatherCondition(weatherData); // Keep for display
+        String weatherCondition = extractWeatherCondition(weatherData); 
         double temperature = extractTemperature(weatherData);
         double visibility = extractVisibility(weatherData);
         double windSpeed = extractWindSpeed(weatherData);
+        
+        // Calculate percentages for UI (Simplified logic based on deltas if possible, or keep existing for now)
+        // For MVP, we use the previously calculated "delta" contributors to weight the impact factors
+        // Calculate percentages for UI (Simplified logic based on deltas if possible, or keep existing for now)
+        // For MVP, we use the previously calculated "delta" contributors to weight the impact factors
+        int trafficPct = (int) Math.min(100, Math.max(0, ((totalDelta > 0) ? (totalDelta * 0.4) / baseDuration : 0.1) * 100));
+        int weatherPct = (int) Math.min(100, Math.max(0, ((totalDelta > 0) ? (totalDelta * 0.2) / baseDuration : 0.1) * 100));
+        int incidentPct = !incidents.isEmpty() ? 30 : 0;
+        int peakPct = isPeakHour ? 20 : 0;
 
-        // Calculate other modifiers
-        double trafficModifier = calculateTrafficModifier(trafficDelay, baseDuration);
-        double incidentModifier = calculateIncidentModifier(incidents);
-        double peakHourModifier = isPeakHour ? 0.15 : 0.0;
+        ImpactFactors impactFactors = new ImpactFactors(
+            trafficPct,
+            weatherPct,
+            incidentPct,
+            peakPct
+        );
+        
+        // Generate Details
+        List<String> explanationPoints = new ArrayList<>();
+        if (totalDelta > 0) explanationPoints.add("⏱️ Retard estimé: +" + Math.round(totalDelta) + " min");
+        if (isPeakHour) explanationPoints.add("⏰ Correction Heure de Pointe appliquée");
+        if (weatherCondition.toLowerCase().contains("rain")) explanationPoints.add("🌧️ Ralentissement pluie (+5 min)");
 
-        // Calculate final duration
-        double totalModifier = 1 + trafficModifier + weatherModifier + incidentModifier + peakHourModifier;
-        double predictedDuration = baseDuration * totalModifier;
-
-        // Calculate impact percentages using the explicit weather value
-        ImpactFactors impactFactors = calculateImpactFactors(trafficModifier, weatherAnalysis.getImpactPercentage(),
-                incidentModifier,
-                peakHourModifier);
-
-        // Calculate risk
-        int riskScore = calculateRiskScore(trafficModifier, weatherModifier, incidentModifier, isPeakHour);
-        String riskLevel = getRiskLevel(riskScore);
-
-        // Generate explanations (Append weather specific explanation)
-        List<String> explanationPoints = generateExplanations(
-                trafficDelay, weatherCondition, incidents.size(), isPeakHour, visibility);
-
-        if (weatherAnalysis.getExplanation() != null
-                && !weatherAnalysis.getExplanation().equals("Conditions optimales.")) {
-            explanationPoints.add("🌧️ Météo: " + weatherAnalysis.getExplanation());
+        // Route Geometry
+        List<Object> routeGeometry = null;
+        if (routeData != null && routeData.containsKey("routeGeometry")) {
+             routeGeometry = (List<Object>) routeData.get("routeGeometry");
         }
 
         // Calculate arrival time
         String arrivalTime = calculateArrivalTime(departureTime, predictedDuration);
 
-        // Generate AI recommendation
-        String aiRecommendation = generateAIRecommendation(
-                isPeakHour, weatherCondition, incidents.size(), departureTime, predictedDuration - baseDuration);
-
-        // Format duration as text
+        // Format duration
         String durationText = formatDuration(predictedDuration);
+        String trafficCondition = (totalDelta > 10) ? "Dense" : ((totalDelta > 5) ? "Modéré" : "Fluide");
 
-        String trafficCondition = getTrafficConditionString(trafficDelay, baseDuration);
+        // Risk
+        int riskScore = (int)((totalDelta / baseDuration) * 100);
+        String riskLevel = riskScore > 30 ? "HIGH" : (riskScore > 10 ? "MEDIUM" : "LOW");
 
         return EnrichedPrediction.builder()
                 .origin(origin)
                 .destination(destination)
                 .timestamp(LocalDateTime.now().toString())
+                // Ensure precision
                 .predictedDuration(Math.round(predictedDuration * 10.0) / 10.0)
                 .baseDuration(Math.round(baseDuration * 10.0) / 10.0)
                 .distanceKm(Math.round(distanceKm * 10.0) / 10.0)
@@ -518,9 +638,10 @@ public class PredictionService {
                 .incidentSeverity(getIncidentSeverity(incidents))
                 .durationText(durationText)
                 .arrivalTime(arrivalTime)
-                .departureTime(departureTime != null ? departureTime
-                        : LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")))
-                .routeGeometry((List<Object>) routeData.get("routeGeometry"))
+                .departureTime(departureTime != null ? departureTime : LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")))
+                .routeGeometry(routeGeometry)
+                .confidenceScore(confidence)
+                .recommendationOffset(totalDelta > 10 ? totalDelta * 0.4 : 0) // Simple rule: avoiding now saves ~40% of delay
                 .build();
     }
 
@@ -767,6 +888,23 @@ public class PredictionService {
     }
 
     // ========== UTILITY METHODS ==========
+
+    private String generateAIRecommendation(boolean isPeakHour, String weatherCondition, int incidentCount, String time, double totalDelay) {
+        StringBuilder rec = new StringBuilder();
+        
+        if (totalDelay > 15) {
+            rec.append("⚠️ Retard significatif prévu. ");
+            rec.append("Partir 30 min plus tard réduirait votre trajet de ~").append(Math.round(totalDelay * 0.4)).append(" min.");
+        } else if (isPeakHour) {
+            rec.append("🕒 Trafic de pointe. Un départ décalé de 20 min est conseillé.");
+        } else if (weatherCondition.toLowerCase().contains("rain")) {
+            rec.append("🌧️ Chaussée glissante. Réduisez votre vitesse et augmentez les distances de sécurité.");
+        } else {
+             rec.append("✅ Conditions optimales. Aucune restriction particulière.");
+        }
+        
+        return rec.toString();
+    }
 
     private double getDoubleValue(Map<String, Object> map, String key, double defaultValue) {
         if (map == null || !map.containsKey(key))

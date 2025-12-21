@@ -77,12 +77,13 @@ export class PredictionService {
     /**
      * Analyze a trip with full enriched prediction (dynamic factors)
      */
-    analyzeEnrichedTrip(origin: string, destination: string, date: string, time: string): Observable<Prediction> {
+    analyzeEnrichedTrip(origin: string, destination: string, date: string, time: string, transportMode: string = 'driving'): Observable<Prediction> {
         return this.http.post<Prediction>(`${this.predictionApiUrl}/analyze/enriched`, {
             origin,
             destination,
             departureDate: date,
-            departureTime: time
+            departureTime: time,
+            transportMode
         }).pipe(
             map(response => {
                 console.log('Enriched prediction received:', response);

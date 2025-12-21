@@ -67,10 +67,11 @@ public class PredictionController {
     public ResponseEntity<EnrichedPrediction> quickPrediction(
             @RequestParam String origin,
             @RequestParam String destination,
-            @RequestParam(required = false) String time) {
+            @RequestParam(required = false) String time,
+            @RequestParam(required = false, defaultValue = "driving") String mode) {
 
         EnrichedPrediction prediction = predictionService.analyzeEnrichedTrip(
-                origin, destination, null, time);
+                origin, destination, null, time, mode);
         return ResponseEntity.ok(prediction);
     }
 }

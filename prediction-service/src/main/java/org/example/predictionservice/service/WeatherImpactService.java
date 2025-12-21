@@ -27,8 +27,9 @@ import java.util.Map;
  * general traffic slowing for safety.
  */
 @Service
-@Slf4j
+@Service
 public class WeatherImpactService {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(WeatherImpactService.class);
 
     private static final double BASE_FRICTION_IMPACT_RAIN = 0.10; // 10% reduction in capacity/speed
     private static final double BASE_VISIBILITY_IMPACT_FOG = 0.15; // 15% reduction

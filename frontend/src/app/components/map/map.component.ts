@@ -1,226 +1,234 @@
-import { Component, OnInit, AfterViewInit, OnDestroy, inject } from '@angular/core';
-import * as L from 'leaflet';
-import 'leaflet.heat'; // Import heat plugin
-import { PredictionService, Prediction } from '../../services/prediction.service';
-import { Subscription } from 'rxjs';
+/// <reference types="google.maps" />
+import { Component, ElementRef, OnInit, ViewChild, AfterViewInit } from '@angular/core';
+import { Observable, Subject } from 'rxjs';
+import { CommonModule } from '@angular/common';
+import { MeteoService } from '../../services/meteo.service';
 
 @Component({
-    selector: 'app-map',
-    standalone: true,
-    template: '<div id="map"></div>',
-    styles: [`
-    #map {
-      height: 600px;
-      width: 100%;
-      border-radius: 8px;
-    }
-    ::ng-deep .custom-div-icon {
-        background: transparent;
-        border: none;
-    }
-  `]
+  selector: 'app-map',
+  standalone: true,
+  imports: [CommonModule],
+  templateUrl: './map.component.html',
+  styleUrls: ['./map.component.css']
 })
-export class MapComponent implements OnInit, AfterViewInit, OnDestroy {
-    private map!: L.Map;
-    private predictionService = inject(PredictionService);
-    private subscription!: Subscription;
-    private markers: L.Marker[] = [];
+export class MapComponent implements OnInit, AfterViewInit {
 
-    // Layers
-    private trafficLayer!: L.LayerGroup;
-    private heatLayer!: any; // L.heatLayer
-    private weatherLayer!: L.LayerGroup;
-    private incidentsLayer!: L.LayerGroup;
 
-    constructor() { }
+  map!: google.maps.Map;
+  directionsService!: google.maps.DirectionsService;
+  directionsRenderer!: google.maps.DirectionsRenderer;
+  trafficLayer!: google.maps.TrafficLayer;
 
-    ngOnInit(): void {
-    }
+  showTraffic = false;
+  weatherData: any = null;
 
-    ngAfterViewInit(): void {
-        this.initMap();
-        this.startUpdates();
-    }
+  // Default center: Morocco (approximate center)
+  // Morocco Bounds: Latitude: 27.666667, Longitude: -9.7
+  // Casablanca: 33.5731, -7.5898
+  defaultCenter = { lat: 33.5731, lng: -7.5898 }; 
 
-    ngOnDestroy(): void {
-        if (this.subscription) {
-            this.subscription.unsubscribe();
-        }
-    }
+  constructor(private meteoService: MeteoService) { }
 
-    private initMap(): void {
-        this.map = L.map('map', {
-            center: [33.5731, -7.5898], // Casablanca coordinates
-            zoom: 13
-        });
-
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            maxZoom: 19,
-            attribution: '© OpenStreetMap contributors'
-        }).addTo(this.map);
-
-        // Initialize Layers
-        this.initLayers();
-
-        // Add Control
-        const overlayMaps = {
-            "Trafic Temps Réel": this.trafficLayer,
-            "Incidents": this.incidentsLayer,
-            "Densité (Heatmap)": this.heatLayer,
-            "Météo": this.weatherLayer
+  ngOnInit(): void {
+    this.meteoService.getLiveWeather(this.defaultCenter.lat, this.defaultCenter.lng).subscribe({
+      next: (data) => {
+        this.weatherData = {
+          city: 'Casablanca', // Default or derived from reverse geocoding
+          temp: data.current.temperature,
+          condition: data.current.condition
         };
-        L.control.layers(undefined, overlayMaps).addTo(this.map);
-    }
+      },
+      error: (err) => console.error('Error fetching weather:', err)
+    });
+  }
 
-    private startUpdates(): void {
-        this.subscription = this.predictionService.getPredictions().subscribe(predictions => {
-            this.updateMarkers(predictions);
-        });
-    }
+  ngAfterViewInit(): void {
+    this.initMap();
+  }
 
-    private updateMarkers(predictions: Prediction[]): void {
-        // 1. Clear ALL existing dynamic markers
-        this.markers.forEach(m => this.map.removeLayer(m));
-        this.markers = [];
-
-        this.map.eachLayer((layer: any) => {
-            if (layer._routeLine) {
-                this.map.removeLayer(layer);
-            }
-        });
-
-        this.weatherLayer.clearLayers();
-        this.incidentsLayer.clearLayers();
-
-        const routeFeatureGroup = L.featureGroup();
-
-        predictions.forEach(p => {
-            // A. Draw Polyline (Route)
-            if (p.routeGeometry && p.routeGeometry.length > 0) {
-                const routePoints = p.routeGeometry.map((pt: any) => [pt.latitude, pt.longitude] as [number, number]);
-                const routeColor = p.riskLevel === 'HIGH' ? '#ef4444' : (p.riskLevel === 'MEDIUM' ? '#f59e0b' : '#3b82f6');
-
-                const polyline = L.polyline(routePoints, {
-                    color: routeColor,
-                    weight: 6,
-                    opacity: 0.8,
-                    lineJoin: 'round'
-                }).addTo(this.map);
-
-                (polyline as any)._routeLine = true;
-                routeFeatureGroup.addLayer(polyline);
-            }
-
-            // B. Add Markers for Origin and Destination
-            let startLat = 33.5731, startLng = -7.5898;
-            let endLat = 33.5731, endLng = -7.5898;
-
-            if (p.routeGeometry && p.routeGeometry.length > 0) {
-                const start = p.routeGeometry[0] as any;
-                const end = p.routeGeometry[p.routeGeometry.length - 1] as any;
-                startLat = start.latitude;
-                startLng = start.longitude;
-                endLat = end.latitude;
-                endLng = end.longitude;
-            }
-
-            // Origin Marker
-            const originIcon = L.divIcon({
-                className: 'custom-div-icon',
-                html: `<div style="background-color:#10b981; width: 14px; height: 14px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 10px rgba(0,0,0,0.2);"></div>`,
-                iconSize: [14, 14],
-                iconAnchor: [7, 7]
-            });
-            const originMarker = L.marker([startLat, startLng], { icon: originIcon }).bindPopup(`<b>Départ:</b> ${p.origin}`).addTo(this.map);
-            routeFeatureGroup.addLayer(originMarker);
-
-            // Destination Marker
-            const destIcon = L.divIcon({
-                className: 'custom-div-icon',
-                html: `<div style="background-color:#ef4444; width: 14px; height: 14px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 10px rgba(0,0,0,0.2);"></div>`,
-                iconSize: [14, 14],
-                iconAnchor: [7, 7]
-            });
-            const destMarker = L.marker([endLat, endLng], { icon: destIcon }).bindPopup(`<b>Arrivée:</b> ${p.destination}`).addTo(this.map);
-            this.markers.push(destMarker);
-            routeFeatureGroup.addLayer(destMarker);
-
-            // C. Add Dynamic Weather Markers
-            if (p.weatherCondition) {
-                const weatherIcon = L.divIcon({
-                    html: `<div style="font-size: 28px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));">${this.getWeatherEmoji(p.weatherCondition)}</div>`,
-                    className: 'custom-div-icon',
-                    iconSize: [32, 32],
-                    iconAnchor: [16, 16]
-                });
-
-                L.marker([startLat, startLng], { icon: weatherIcon, zIndexOffset: 1000 })
-                    .bindPopup(`<b>Météo au départ:</b> ${p.weatherCondition} (${p.temperature}°C)`)
-                    .addTo(this.weatherLayer);
-
-                if (p.distanceKm > 10) {
-                    L.marker([endLat, endLng], { icon: weatherIcon, zIndexOffset: 1000 })
-                        .bindPopup(`<b>Météo à l'arrivée:</b> ${p.weatherCondition} (${p.temperature}°C)`)
-                        .addTo(this.weatherLayer);
-                }
-            }
-
-            // D. Add Dynamic Incidents
-            if (p.hasIncidents && p.routeGeometry && p.routeGeometry.length > 5) {
-                const midPoint = p.routeGeometry[Math.floor(p.routeGeometry.length / 2)];
-                const accidentIcon = L.divIcon({
-                    html: '<div style="font-size: 28px; filter: drop-shadow(0 0 8px rgba(239, 68, 68, 0.6));">⚠️</div>',
-                    className: 'custom-div-icon',
-                    iconSize: [32, 32],
-                    iconAnchor: [16, 16]
-                });
-
-                L.marker([midPoint.latitude, midPoint.longitude], { icon: accidentIcon, zIndexOffset: 1100 })
-                    .bindPopup(`<b>Incident détecté:</b> ${p.incidentCount} événement(s) en temps réel.`)
-                    .addTo(this.incidentsLayer);
-            }
-        });
-
-        // 2. Fit bounds to show everything
-        if (routeFeatureGroup.getLayers().length > 0) {
-            this.map.fitBounds(routeFeatureGroup.getBounds(), { padding: [50, 50] });
+  initMap(): void {
+    const mapOptions: google.maps.MapOptions = {
+      center: this.defaultCenter,
+      zoom: 13,
+      mapTypeControl: false,
+      streetViewControl: false,
+      fullscreenControl: false,
+      zoomControl: true,
+      styles: [
+        {
+          featureType: "poi",
+          elementType: "labels",
+          stylers: [{ visibility: "off" }]
         }
+      ]
+    };
+
+    this.map = new google.maps.Map(document.getElementById('map') as HTMLElement, mapOptions);
+    
+    this.directionsService = new google.maps.DirectionsService();
+    this.directionsRenderer = new google.maps.DirectionsRenderer({
+      map: this.map,
+      suppressMarkers: false,
+      polylineOptions: {
+        strokeColor: "#4285f4",
+        strokeWeight: 5
+      }
+    });
+
+    this.trafficLayer = new google.maps.TrafficLayer();
+
+
+    this.getUserLocation();
+  }
+
+
+
+  public calculateRoute(originCoords: {lat: number, lng: number}, destination: string, transportMode: string = 'driving'): Observable<google.maps.DirectionsResult | null> {
+    const mode = this.getTravelMode(transportMode);
+    const resultSubject = new Subject<google.maps.DirectionsResult | null>();
+    
+    // Fetch weather for the origin
+    this.updateWeather(originCoords.lat, originCoords.lng, "Départ");
+
+    this.directionsService.route(
+      {
+        origin: originCoords,
+        destination: destination,
+        travelMode: mode,
+        provideRouteAlternatives: true,
+        drivingOptions: mode === google.maps.TravelMode.DRIVING ? {
+             departureTime: new Date(), // Important for duration_in_traffic
+             trafficModel: google.maps.TrafficModel.BEST_GUESS
+        } : undefined
+      },
+      (response, status) => {
+          this.handleRouteResponse(response, status);
+          if (status === "OK") {
+              resultSubject.next(response);
+          } else {
+              resultSubject.next(null);
+          }
+          resultSubject.complete();
+      }
+    );
+
+    return resultSubject.asObservable();
+  }
+
+  public calculateRouteFromStrings(origin: string, destination: string, transportMode: string = 'driving'): Observable<google.maps.DirectionsResult | null> {
+    const mode = this.getTravelMode(transportMode);
+    const resultSubject = new Subject<google.maps.DirectionsResult | null>();
+
+    // Fetch weather for the origin
+    const geocoder = new google.maps.Geocoder();
+    geocoder.geocode({ address: origin }, (results, status) => {
+      if (status === "OK" && results && results[0]) {
+        const lat = results[0].geometry.location.lat();
+        const lng = results[0].geometry.location.lng();
+        this.updateWeather(lat, lng, origin);
+      }
+    });
+
+    this.directionsService.route(
+      {
+        origin: origin,
+        destination: destination,
+        travelMode: mode,
+        provideRouteAlternatives: true,
+        drivingOptions: mode === google.maps.TravelMode.DRIVING ? {
+             departureTime: new Date(),
+             trafficModel: google.maps.TrafficModel.BEST_GUESS
+        } : undefined
+      },
+      (response, status) => {
+          this.handleRouteResponse(response, status);
+           if (status === "OK") {
+              resultSubject.next(response);
+          } else {
+              resultSubject.next(null);
+          }
+           resultSubject.complete();
+      }
+    );
+    
+    return resultSubject.asObservable();
+  }
+
+  private handleRouteResponse(response: google.maps.DirectionsResult | null, status: google.maps.DirectionsStatus): void {
+    if (status === "OK" && response) {
+      this.directionsRenderer.setDirections(response);
+      const bounds = response.routes[0].bounds;
+      this.map.fitBounds(bounds);
+    } else {
+      console.error("Directions request failed due to " + status);
     }
+  }
 
-    private initLayers(): void {
-        this.trafficLayer = L.layerGroup().addTo(this.map);
+  private getTravelMode(mode: string): google.maps.TravelMode {
+    switch (mode.toLowerCase()) {
+      case 'walking': return google.maps.TravelMode.WALKING;
+      case 'transit': return google.maps.TravelMode.TRANSIT;
+      default: return google.maps.TravelMode.DRIVING;
+    }
+  }
 
-        // Decoration: background traffic feel
-        const backgroundTrafic = [[[33.57, -7.60], [33.58, -7.59]], [[33.59, -7.61], [33.585, -7.605]]];
-        backgroundTrafic.forEach(route => {
-            L.polyline(route as L.LatLngExpression[], { color: 'red', weight: 4, opacity: 0.4 })
-                .bindPopup('Trafic historique élevé')
-                .addTo(this.trafficLayer);
-        });
+  getUserLocation(): void {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const pos = {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+          };
 
-        this.weatherLayer = L.layerGroup().addTo(this.map);
-        this.incidentsLayer = L.layerGroup().addTo(this.map);
+          // Add a marker for user location
+          new google.maps.Marker({
+            position: pos,
+            map: this.map,
+            title: "Votre position",
+            icon: {
+                path: google.maps.SymbolPath.CIRCLE,
+                scale: 7,
+                fillColor: "#4285F4",
+                fillOpacity: 1,
+                strokeColor: "white",
+                strokeWeight: 2,
+            },
+          });
 
-        // Heatmap
-        const heatPoints: [number, number, number][] = [];
-        for (let i = 0; i < 300; i++) {
-            heatPoints.push([
-                33.5731 + (Math.random() - 0.5) * 0.08,
-                -7.5898 + (Math.random() - 0.5) * 0.08,
-                Math.random() * 0.8
-            ]);
+          this.map.setCenter(pos);
+          
+
+          
+        },
+        () => {
+          console.log("Error: The Geolocation service failed.");
         }
-        // @ts-ignore
-        this.heatLayer = L.heatLayer(heatPoints, { radius: 20, blur: 15, maxZoom: 17 });
+      );
+    } else {
+      console.log("Error: Your browser doesn't support geolocation.");
     }
+  }
 
-    private getWeatherEmoji(condition: string): string {
-        const c = (condition || '').toLowerCase();
-        if (c.includes('rain') || c.includes('pluie')) return '🌧️';
-        if (c.includes('cloud') || c.includes('overcast')) return '☁️';
-        if (c.includes('fog') || c.includes('brouillard')) return '🌫️';
-        if (c.includes('storm') || c.includes('orage')) return '⛈️';
-        if (c.includes('snow') || c.includes('neige')) return '❄️';
-        return '☀️';
+  toggleTraffic(): void {
+    this.showTraffic = !this.showTraffic;
+    if (this.showTraffic) {
+      this.trafficLayer.setMap(this.map);
+    } else {
+      this.trafficLayer.setMap(null);
     }
+  }
+
+  updateWeather(lat: number, lng: number, cityName?: string): void {
+    this.meteoService.getLiveWeather(lat, lng).subscribe({
+      next: (data) => {
+        this.weatherData = {
+          city: cityName || 'Localisation actuelle', 
+          temp: data.current.temperature,
+          condition: data.current.condition
+        };
+      },
+      error: (err) => console.error('Error fetching weather:', err)
+    });
+  }
 }

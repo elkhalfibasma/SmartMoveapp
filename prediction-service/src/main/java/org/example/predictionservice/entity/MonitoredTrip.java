@@ -25,4 +25,8 @@ public class MonitoredTrip {
     private double lastDuration; // Minutes
     private String userId; // Or deviceId
     private boolean isActive;
+
+    public String getOrigin() { return origin; }
+    public String getDestination() { return destination; }
+    public String getUserId() { return userId; }
 }
